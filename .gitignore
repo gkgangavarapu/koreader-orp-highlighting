@@ -1,0 +1,6 @@
+# KOReader plugin repos keep the folder named *.koplugin; nothing to build.
+# Ignore OS noise.
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.zip
