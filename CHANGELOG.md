@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-14
+
+### Fixed
+
+- **Bold rendering no longer garbles the page.** The overlay used to copy each
+  ORP character's whole cell and blit it back shifted outside the cell, which
+  overwrote neighbouring glyphs and background (the header and adjacent letters
+  were smeared). It now thickens the ink *inside the character's own rectangle*
+  using a clamped multiply blend, so nothing is ever drawn outside the cell.
+- The bold thickness values are now plain pixel counts (1-4 per side), matching
+  the engine's built-in bold instead of being scaled up on high-DPI screens.
+
 ## [0.2.1] - 2026-09-14
 
 ### Fixed

@@ -26,7 +26,6 @@ Phases implemented here:
 --]]--
 
 local Blitbuffer = require("ffi/blitbuffer")
-local Device = require("device")
 local InfoMessage = require("ui/widget/infomessage")
 local Support = require("support")
 local UIManager = require("ui/uimanager")
@@ -35,8 +34,6 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
 local _ = require("gettext")
 local orp = require("orp")
-
-local Screen = Device.screen
 
 -- CREngine reports a word that is split across a line-break hyphen as two visual
 -- "words" (e.g. "recogni-" + "tion"). Rejoin such fragments so ORP is computed on
@@ -87,16 +84,16 @@ local ORPHighlighting = WidgetContainer:extend{
     key_update_last_check = "orp_highlighting_update_last_check",
 
     -- The visual styles the ORP glyph can take. All three are drawn as an
-    -- overlay by paintTo(): underline/inverse directly, and bold by smearing the
-    -- rendered glyph a few pixels (see smudgeRect), so it works on every build
-    -- and its thickness is user-selectable.
+    -- overlay by paintTo(): underline/inverse directly, and bold by thickening
+    -- the glyph's ink inside its own character cell (see boldenRect), so it
+    -- works on every build and its thickness is user-selectable.
     STYLES = {
         { id = "underline", text = _("Underline") },
         { id = "inverse",   text = _("Inverse") },
         { id = "bold",      text = _("Bold") },
     },
 
-    -- How far the bold overlay smears the glyph, in pixels (screen-scaled).
+    -- How many pixels the bold overlay thickens the glyph by, each side.
     BOLD_THICKNESS = {
         { id = 1, text = _("Thin") },
         { id = 2, text = _("Medium") },
@@ -403,18 +400,23 @@ function ORPHighlighting:_computeTargets()
     return targets
 end
 
--- Pseudo-bold without a core change: copy the rendered ORP glyph cell and blit
--- it back a few pixels to the right and down, thickening the strokes. The page
--- content is already painted underneath when this runs (ReaderView invokes view
--- modules after drawing the page), so the copied pixels are the real glyph.
-local function smudgeRect(bb, x, y, w, h, amount)
-    if w <= 0 or h <= 0 then return end
+-- Pseudo-bold without a core change: thicken the ORP glyph's ink *inside its
+-- own character rectangle*. We snapshot the cell, then blend it back shifted one
+-- pixel at a time using the "multiply" setter (white is a no-op, ink darkens),
+-- and clamp every shift so nothing is ever drawn outside the cell. The earlier
+-- version blitted whole shifted cells over their neighbours, which overwrote
+-- adjacent glyphs/background and garbled the page.
+local function boldenRect(bb, x, y, w, h, radius)
+    if w <= 1 or h <= 1 then return end
+    local setter = bb.setPixelMultiply
+    if not setter then return end
     local copy = Blitbuffer.new(w, h, bb:getType())
     if not copy then return end
     copy:blitFrom(bb, 0, 0, x, y, w, h)
-    for i = 1, amount do
-        bb:blitFrom(copy, x + i, y, 0, 0, w, h)
-        bb:blitFrom(copy, x, y + i, 0, 0, w, h)
+    for d = 1, radius do
+        if d >= w then break end
+        bb:blitFrom(copy, x + d, y, 0, 0, w - d, h, setter) -- spread right
+        bb:blitFrom(copy, x, y, d, 0, w - d, h, setter)     -- spread left
     end
     copy:free()
 end
@@ -423,9 +425,9 @@ end
 function ORPHighlighting:paintTo(bb, x, y)
     if not self.is_enabled or not self.orp_targets then return end
     if self.style == "bold" then
-        local amount = Screen:scaleBySize(self.bold_thickness or 2)
+        local radius = self.bold_thickness or 2
         for _, r in ipairs(self.orp_targets) do
-            smudgeRect(bb, x + r.x, y + r.y, r.w, r.h, amount)
+            boldenRect(bb, x + r.x, y + r.y, r.w, r.h, radius)
         end
         return
     end

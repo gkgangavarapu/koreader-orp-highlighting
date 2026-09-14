@@ -15,7 +15,7 @@ previous plugin folder is kept as a backup and restored if the swap fails.
 local Update = {}
 
 -- Version of the code in this repository. Bump together with the git tag.
-Update.VERSION = "0.2.1"
+Update.VERSION = "0.2.2"
 
 local REPO = "gkgangavarapu/koreader-orp-highlighting"
 local API_URL = "https://api.github.com/repos/" .. REPO .. "/releases/latest"
