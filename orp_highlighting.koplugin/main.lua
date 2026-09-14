@@ -80,30 +80,19 @@ local ORPHighlighting = WidgetContainer:extend{
     settings_key = "orp_highlighting",
     key_enabled = "orp_highlighting_enabled",
     key_style = "orp_highlighting_style",
-    key_bold_thickness = "orp_highlighting_bold_thickness",
     key_update_last_check = "orp_highlighting_update_last_check",
 
-    -- The visual styles the ORP glyph can take. All three are drawn as an
-    -- overlay by paintTo(): underline/inverse directly, and bold by thickening
-    -- the glyph's ink inside its own character cell (see boldenRect), so it
-    -- works on every build and its thickness is user-selectable.
+    -- The visual styles the ORP glyph can take. Underline/inverse are drawn as an
+    -- overlay by paintTo(); "bold" is emboldened by CREngine at page render time
+    -- via document:setOrpBoldRects (drawCurrentPage thickens the glyph).
     STYLES = {
         { id = "underline", text = _("Underline") },
         { id = "inverse",   text = _("Inverse") },
         { id = "bold",      text = _("Bold") },
     },
 
-    -- How many pixels the bold overlay thickens the glyph by, each side.
-    BOLD_THICKNESS = {
-        { id = 1, text = _("Thin") },
-        { id = 2, text = _("Medium") },
-        { id = 3, text = _("Thick") },
-        { id = 4, text = _("Extra thick") },
-    },
-
     is_enabled = false,
     style = "underline",
-    bold_thickness = 2,
     orp_targets = nil,      -- array of { x, y, w, h } overlay rects (page coords)
     doc_is_cre = false,
     patch_available = false,
@@ -115,11 +104,6 @@ function ORPHighlighting:init()
     self.style = G_reader_settings:readSetting(self.key_style, "underline")
     if not self:_isValidStyle(self.style) then
         self.style = "underline"
-    end
-    self.bold_thickness = tonumber(
-        G_reader_settings:readSetting(self.key_bold_thickness, 2)) or 2
-    if not self:_isValidBoldThickness(self.bold_thickness) then
-        self.bold_thickness = 2
     end
     -- A previous successful self-update left a backup; the new code is now
     -- running, so it is safe to remove. Guarded so it can never break loading.
@@ -157,23 +141,14 @@ function ORPHighlighting:_isValidStyle(id)
     return false
 end
 
-function ORPHighlighting:_isValidBoldThickness(id)
-    for _, s in ipairs(self.BOLD_THICKNESS) do
-        if s.id == id then return true end
-    end
-    return false
-end
-
 function ORPHighlighting:_save()
     G_reader_settings:saveSetting(self.key_enabled, self.is_enabled)
     G_reader_settings:saveSetting(self.key_style, self.style)
-    G_reader_settings:saveSetting(self.key_bold_thickness, self.bold_thickness)
 end
 
 function ORPHighlighting:deletePluginSettings()
     G_reader_settings:delSetting(self.key_enabled)
     G_reader_settings:delSetting(self.key_style)
-    G_reader_settings:delSetting(self.key_bold_thickness)
     G_reader_settings:delSetting(self.key_update_last_check)
 end
 
@@ -191,20 +166,6 @@ function ORPHighlighting:addToMainMenu(menu_items)
             checked_func = function() return self.style == s.id end,
             callback = function()
                 self.style = s.id
-                self:_save()
-                self:refresh()
-                return true
-            end,
-        }
-    end
-
-    local thickness_items = {}
-    for _, t in ipairs(self.BOLD_THICKNESS) do
-        thickness_items[#thickness_items + 1] = {
-            text = t.text,
-            checked_func = function() return self.bold_thickness == t.id end,
-            callback = function()
-                self.bold_thickness = t.id
                 self:_save()
                 self:refresh()
                 return true
@@ -234,12 +195,6 @@ function ORPHighlighting:addToMainMenu(menu_items)
                 text = _("Style"),
                 keep_menu_open = true,
                 sub_item_table = style_items,
-            },
-            {
-                text = _("Bold thickness"),
-                keep_menu_open = true,
-                enabled_func = function() return self.style == "bold" end,
-                sub_item_table = thickness_items,
             },
             {
                 text = _("Other"),
@@ -345,6 +300,7 @@ function ORPHighlighting:refresh()
     else
         self.orp_targets = nil
     end
+    self:_syncBoldTargets()
     if self.view and self.view.dimen then
         UIManager:setDirty(self.view, "partial")
     end
@@ -362,7 +318,25 @@ function ORPHighlighting:onPageUpdate()
     else
         self.orp_targets = nil
     end
+    self:_syncBoldTargets()
     -- returning nil lets the default handler run (page drawing proceeds normally)
+end
+
+-- When style == "bold", hand the ORP rectangles to the engine (drawCurrentPage
+-- emboldens them at page-render time). For every other style we clear them and
+-- let paintTo() draw the overlay instead.
+function ORPHighlighting:_syncBoldTargets()
+    local doc = self.ui.document
+    if not doc or not doc.setOrpBoldRects then return end
+    if self.is_enabled and self.doc_is_cre and self.style == "bold" and self.orp_targets then
+        local rects = {}
+        for i, r in ipairs(self.orp_targets) do
+            rects[i] = { x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h }
+        end
+        pcall(doc.setOrpBoldRects, doc, rects)
+    else
+        pcall(doc.setOrpBoldRects, doc, {})
+    end
 end
 
 -- Core-glyph-patch interface (document:orpVisibleWords, additive read-only):
@@ -400,35 +374,11 @@ function ORPHighlighting:_computeTargets()
     return targets
 end
 
--- Pseudo-bold without a core change: thicken the ORP glyph's ink *inside its
--- own character rectangle*. We snapshot the cell, then blend it back shifted one
--- pixel at a time using the "multiply" setter (white is a no-op, ink darkens),
--- and clamp every shift so nothing is ever drawn outside the cell. The earlier
--- version blitted whole shifted cells over their neighbours, which overwrote
--- adjacent glyphs/background and garbled the page.
-local function boldenRect(bb, x, y, w, h, radius)
-    if w <= 1 or h <= 1 then return end
-    local setter = bb.setPixelMultiply
-    if not setter then return end
-    local copy = Blitbuffer.new(w, h, bb:getType())
-    if not copy then return end
-    copy:blitFrom(bb, 0, 0, x, y, w, h)
-    for d = 1, radius do
-        if d >= w then break end
-        bb:blitFrom(copy, x + d, y, 0, 0, w - d, h, setter) -- spread right
-        bb:blitFrom(copy, x, y, d, 0, w - d, h, setter)     -- spread left
-    end
-    copy:free()
-end
-
 -- Overlay painter, invoked by ReaderView on top of the page.
 function ORPHighlighting:paintTo(bb, x, y)
     if not self.is_enabled or not self.orp_targets then return end
     if self.style == "bold" then
-        local radius = self.bold_thickness or 2
-        for _, r in ipairs(self.orp_targets) do
-            boldenRect(bb, x + r.x, y + r.y, r.w, r.h, radius)
-        end
+        -- Bold is done by CREngine at render time (see _syncBoldTargets), not here.
         return
     end
     for _, r in ipairs(self.orp_targets) do
@@ -550,6 +500,10 @@ end
 -- Drop overlay when leaving the document.
 function ORPHighlighting:onCloseDocument()
     self.orp_targets = nil
+    local doc = self.ui.document
+    if doc and doc.setOrpBoldRects then
+        pcall(doc.setOrpBoldRects, doc, {})
+    end
 end
 
 -- ---------------------------------------------------------------------------

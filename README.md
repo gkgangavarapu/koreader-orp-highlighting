@@ -23,8 +23,8 @@ modified.
 ## Features
 
 - **Underline**, **Inverse**, and **Bold** emphasis on each word's ORP letter.
-- **Bold thickness** selection — Thin / Medium / Thick / Extra thick — rendered
-  in the plugin's own overlay, so it works without a special KOReader build.
+  Bold is drawn by CREngine while the page is rendered, so it is smooth and
+  lag-free.
 - **Diagnostic** on the current page: prints a `word | letters | ORP` table so
   you can verify the algorithm independently of the highlight. Works on any
   KOReader, even without the engine capability.
@@ -47,7 +47,6 @@ toggle and the diagnostic are disabled until a book is open.
 2. Go to **Tools → ORP Highlighting**.
 3. Toggle **ORP Highlighting** on.
 4. Pick a **Style**: **Underline**, **Inverse**, or **Bold**.
-   - If you pick **Bold**, choose a **Bold thickness**.
 5. The page is repainted with each word's ORP character marked.
 
 All other entries live under **Other**:
@@ -136,7 +135,7 @@ local DEFAULT_RULES = {
 ```
 orp_highlighting.koplugin/
   _meta.lua       plugin metadata
-  main.lua        reader plugin: menu, toggle, styles, bold thickness, overlay
+  main.lua        reader plugin: menu, toggle, styles, overlay, OTA wiring
   orp.lua         pure, dependency-free ORP core (UTF-8 safe)
   update.lua      GitHub Releases update checker / installer
   support.lua     support (funding) dialog

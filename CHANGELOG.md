@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-14
+
+### Changed
+
+- **Bold is back to the native CREngine path** (`document:setOrpBoldRects`),
+  rendered in C while the page is drawn. This restores the smooth, lag-free
+  behaviour of the first version and removes the jitter/delay caused by the
+  Lua per-pixel overlay.
+- **Removed the "Bold thickness" option.** Varying the thickness from the
+  plugin required the slow Lua overlay; the engine's bold is a fixed weight.
+  (A selectable thickness would need a small change in the CREngine patch and a
+  rebuilt KOReader image, not just the plugin.)
+
+### Kept
+
+- **Over-the-air (OTA) updates** (weekly check, SHA-256 verified, in-place
+  install, restart).
+- **Support this project** funding dialog with the scannable QR code.
+- The **Other** menu (diagnostic, check for updates, version, support, about),
+  File-Manager visibility (`is_doc_only = false`), and all other features.
+
 ## [0.2.2] - 2026-09-14
 
 ### Fixed
