@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Lua 5.1
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1 zip
+
+      - name: Lua syntax check
+        run: |
+          find orp_highlighting.koplugin -name '*.lua' -print0 \
+            | xargs -0 -n1 luac5.1 -p
+
+      - name: Unit tests
+        run: lua5.1 orp_highlighting.koplugin/test_orp.lua
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          zip -r dist/orp_highlighting.koplugin.zip orp_highlighting.koplugin
+          cd dist
+          sha256sum orp_highlighting.koplugin.zip > orp_highlighting.koplugin.zip.sha256
+          cat orp_highlighting.koplugin.zip.sha256
+
+      - name: Verify archive contents
+        run: |
+          set -e
+          unzip -l dist/orp_highlighting.koplugin.zip
+          unzip -l dist/orp_highlighting.koplugin.zip | grep -q "orp_highlighting.koplugin/main.lua"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orp_highlighting
+          path: dist/
