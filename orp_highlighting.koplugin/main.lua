@@ -23,12 +23,17 @@ Phases implemented here:
 --]]--
 
 local Blitbuffer = require("ffi/blitbuffer")
+local Device = require("device")
 local InfoMessage = require("ui/widget/infomessage")
+local Support = require("support")
 local UIManager = require("ui/uimanager")
+local Update = require("update")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
 local _ = require("gettext")
 local orp = require("orp")
+
+local Screen = Device.screen
 
 -- CREngine reports a word that is split across a line-break hyphen as two visual
 -- "words" (e.g. "recogni-" + "tion"). Rejoin such fragments so ORP is computed on
@@ -75,18 +80,30 @@ local ORPHighlighting = WidgetContainer:extend{
     settings_key = "orp_highlighting",
     key_enabled = "orp_highlighting_enabled",
     key_style = "orp_highlighting_style",
+    key_bold_thickness = "orp_highlighting_bold_thickness",
+    key_update_last_check = "orp_highlighting_update_last_check",
 
-    -- The visual styles the ORP glyph can take. Underline/inverse are drawn as an
-    -- overlay by paintTo(); "bold" is emboldened by CREngine at page render time
-    -- via document:setOrpBoldRects (drawCurrentPage thickens the glyph).
+    -- The visual styles the ORP glyph can take. All three are drawn as an
+    -- overlay by paintTo(): underline/inverse directly, and bold by smearing the
+    -- rendered glyph a few pixels (see smudgeRect), so it works on every build
+    -- and its thickness is user-selectable.
     STYLES = {
         { id = "underline", text = _("Underline") },
         { id = "inverse",   text = _("Inverse") },
         { id = "bold",      text = _("Bold") },
     },
 
+    -- How far the bold overlay smears the glyph, in pixels (screen-scaled).
+    BOLD_THICKNESS = {
+        { id = 1, text = _("Thin") },
+        { id = 2, text = _("Medium") },
+        { id = 3, text = _("Thick") },
+        { id = 4, text = _("Extra thick") },
+    },
+
     is_enabled = false,
     style = "underline",
+    bold_thickness = 2,
     orp_targets = nil,      -- array of { x, y, w, h } overlay rects (page coords)
     doc_is_cre = false,
     patch_available = false,
@@ -99,12 +116,21 @@ function ORPHighlighting:init()
     if not self:_isValidStyle(self.style) then
         self.style = "underline"
     end
+    self.bold_thickness = tonumber(
+        G_reader_settings:readSetting(self.key_bold_thickness, 2)) or 2
+    if not self:_isValidBoldThickness(self.bold_thickness) then
+        self.bold_thickness = 2
+    end
+    -- A previous successful self-update left a backup; the new code is now
+    -- running, so it is safe to remove. Guarded so it can never break loading.
+    if self.path then pcall(Update.cleanupBackup, self.path) end
     self.doc_is_cre = self:_isCre()
     self:registerToMainMenu()
     if self.view and self.view.registerViewModule then
         -- So ReaderView calls our paintTo() overlay on top of the page.
         self.view:registerViewModule(self.name, self)
     end
+    self:maybeCheckForUpdates()
 end
 
 -- True when the current document is in reflowable (CREngine) mode.
@@ -126,14 +152,24 @@ function ORPHighlighting:_isValidStyle(id)
     return false
 end
 
+function ORPHighlighting:_isValidBoldThickness(id)
+    for _, s in ipairs(self.BOLD_THICKNESS) do
+        if s.id == id then return true end
+    end
+    return false
+end
+
 function ORPHighlighting:_save()
     G_reader_settings:saveSetting(self.key_enabled, self.is_enabled)
     G_reader_settings:saveSetting(self.key_style, self.style)
+    G_reader_settings:saveSetting(self.key_bold_thickness, self.bold_thickness)
 end
 
 function ORPHighlighting:deletePluginSettings()
     G_reader_settings:delSetting(self.key_enabled)
     G_reader_settings:delSetting(self.key_style)
+    G_reader_settings:delSetting(self.key_bold_thickness)
+    G_reader_settings:delSetting(self.key_update_last_check)
 end
 
 function ORPHighlighting:registerToMainMenu()
@@ -150,6 +186,20 @@ function ORPHighlighting:addToMainMenu(menu_items)
             checked_func = function() return self.style == s.id end,
             callback = function()
                 self.style = s.id
+                self:_save()
+                self:refresh()
+                return true
+            end,
+        }
+    end
+
+    local thickness_items = {}
+    for _, t in ipairs(self.BOLD_THICKNESS) do
+        thickness_items[#thickness_items + 1] = {
+            text = t.text,
+            checked_func = function() return self.bold_thickness == t.id end,
+            callback = function()
+                self.bold_thickness = t.id
                 self:_save()
                 self:refresh()
                 return true
@@ -180,18 +230,54 @@ function ORPHighlighting:addToMainMenu(menu_items)
                 sub_item_table = style_items,
             },
             {
-                text = _("Run ORP diagnostic on current page"),
+                text = _("Bold thickness"),
                 keep_menu_open = true,
-                callback = function()
-                    self:showDiagnostic()
-                end,
+                enabled_func = function() return self.style == "bold" end,
+                sub_item_table = thickness_items,
             },
             {
-                text = _("About"),
-                keep_menu_open = true,
-                callback = function()
-                    UIManager:show(InfoMessage:new{
-                        text = _([[
+                text = _("Other"),
+                sub_item_table = {
+                    {
+                        text = _("Run ORP diagnostic on current page"),
+                        keep_menu_open = true,
+                        callback = function()
+                            self:showDiagnostic()
+                        end,
+                    },
+                    {
+                        text = _("Check for updates"),
+                        keep_menu_open = true,
+                        callback = function()
+                            self:checkForUpdates(true)
+                        end,
+                    },
+                    {
+                        text_func = function()
+                            return string.format(_("Version: %s"), Update.VERSION)
+                        end,
+                        keep_menu_open = true,
+                        callback = function()
+                            UIManager:show(InfoMessage:new{
+                                text = string.format(_("ORP Highlighting v%s\n%s"),
+                                    Update.VERSION, Update.PAGE_URL),
+                                timeout = 10,
+                            })
+                        end,
+                    },
+                    {
+                        text = _("Support this project"),
+                        keep_menu_open = true,
+                        callback = function()
+                            Support.show()
+                        end,
+                    },
+                    {
+                        text = _("About"),
+                        keep_menu_open = true,
+                        callback = function()
+                            UIManager:show(InfoMessage:new{
+                                text = _([[
 Highlights the Optimal Recognition Point (ORP) of each word.
 Uses 1-2→1, 3-5→2, 6-9→3, 10+→4 letters by default.
 
@@ -200,8 +286,10 @@ Precise single-glyph styling requires the reversible crengine
 glyph export patch (see crengine-patch/). The diagnostic works
 without it.
 ]]),
-                    })
-                end,
+                            })
+                        end,
+                    },
+                },
             },
         },
     }
@@ -250,7 +338,6 @@ function ORPHighlighting:refresh()
     else
         self.orp_targets = nil
     end
-    self:_syncBoldTargets()
     if self.view and self.view.dimen then
         UIManager:setDirty(self.view, "partial")
     end
@@ -268,25 +355,7 @@ function ORPHighlighting:onPageUpdate()
     else
         self.orp_targets = nil
     end
-    self:_syncBoldTargets()
     -- returning nil lets the default handler run (page drawing proceeds normally)
-end
-
--- When style == "bold", hand the ORP rectangles to the engine (drawCurrentPage
--- emboldens them at page-render time). For every other style we clear them and
--- let paintTo() draw the overlay instead.
-function ORPHighlighting:_syncBoldTargets()
-    local doc = self.ui.document
-    if not doc or not doc.setOrpBoldRects then return end
-    if self.is_enabled and self.doc_is_cre and self.style == "bold" and self.orp_targets then
-        local rects = {}
-        for i, r in ipairs(self.orp_targets) do
-            rects[i] = { x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h }
-        end
-        pcall(doc.setOrpBoldRects, doc, rects)
-    else
-        pcall(doc.setOrpBoldRects, doc, {})
-    end
 end
 
 -- Core-glyph-patch interface (document:orpVisibleWords, additive read-only):
@@ -324,11 +393,30 @@ function ORPHighlighting:_computeTargets()
     return targets
 end
 
+-- Pseudo-bold without a core change: copy the rendered ORP glyph cell and blit
+-- it back a few pixels to the right and down, thickening the strokes. The page
+-- content is already painted underneath when this runs (ReaderView invokes view
+-- modules after drawing the page), so the copied pixels are the real glyph.
+local function smudgeRect(bb, x, y, w, h, amount)
+    if w <= 0 or h <= 0 then return end
+    local copy = Blitbuffer.new(w, h, bb:getType())
+    if not copy then return end
+    copy:blitFrom(bb, 0, 0, x, y, w, h)
+    for i = 1, amount do
+        bb:blitFrom(copy, x + i, y, 0, 0, w, h)
+        bb:blitFrom(copy, x, y + i, 0, 0, w, h)
+    end
+    copy:free()
+end
+
 -- Overlay painter, invoked by ReaderView on top of the page.
 function ORPHighlighting:paintTo(bb, x, y)
     if not self.is_enabled or not self.orp_targets then return end
     if self.style == "bold" then
-        -- Bold is done by CREngine at render time (see _syncBoldTargets), not here.
+        local amount = Screen:scaleBySize(self.bold_thickness or 2)
+        for _, r in ipairs(self.orp_targets) do
+            smudgeRect(bb, x + r.x, y + r.y, r.w, r.h, amount)
+        end
         return
     end
     for _, r in ipairs(self.orp_targets) do
@@ -450,10 +538,139 @@ end
 -- Drop overlay when leaving the document.
 function ORPHighlighting:onCloseDocument()
     self.orp_targets = nil
-    local doc = self.ui.document
-    if doc and doc.setOrpBoldRects then
-        pcall(doc.setOrpBoldRects, doc, {})
+end
+
+-- ---------------------------------------------------------------------------
+-- Connectivity helpers (used only by the OTA updater; never while reading).
+-- ---------------------------------------------------------------------------
+function ORPHighlighting:isOnline()
+    local ok, NetworkMgr = pcall(require, "ui/network/manager")
+    if ok and NetworkMgr and type(NetworkMgr.isConnected) == "function" then
+        return NetworkMgr:isConnected()
     end
+    return true
+end
+
+-- Run `callback` now if online; otherwise let KOReader's network framework try
+-- to get online, honoring the user's global "Wi-Fi enable action".
+function ORPHighlighting:runWhenOnline(callback)
+    local ok, NetworkMgr = pcall(require, "ui/network/manager")
+    if not ok or not NetworkMgr
+        or type(NetworkMgr.willRerunWhenOnline) ~= "function" then
+        callback()
+        return true
+    end
+    if NetworkMgr:willRerunWhenOnline(callback) then
+        return false
+    end
+    callback()
+    return true
+end
+
+-- Run a network-only task off the UI thread when possible, falling back to a
+-- blocking run when not in a coroutine.
+function ORPHighlighting:runInBackground(text, task)
+    local ok, Trapper = pcall(require, "ui/trapper")
+    if ok and Trapper and type(Trapper.dismissableRunInSubprocess) == "function" then
+        local completed, a, b, c = Trapper:dismissableRunInSubprocess(task, text)
+        return completed, a, b, c
+    end
+    local a, b, c = task()
+    return true, a, b, c
+end
+
+function ORPHighlighting:runAsync(fn)
+    local ok, Trapper = pcall(require, "ui/trapper")
+    if ok and Trapper and type(Trapper.wrap) == "function" then
+        Trapper:wrap(fn)
+    else
+        fn()
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- OTA update
+-- ---------------------------------------------------------------------------
+function ORPHighlighting:checkForUpdates(manual)
+    self:runWhenOnline(function()
+        self:runAsync(function()
+            local completed, info, err = self:runInBackground(
+                manual and _("Checking for updates…") or nil,
+                function()
+                    local ok, a, b = pcall(Update.check)
+                    if not ok then return nil, tostring(a) end
+                    return a, b
+                end)
+            if completed == false then return end
+            if not info then
+                logger.warn("orp_highlighting update: check failed", tostring(err))
+                if manual then
+                    UIManager:show(InfoMessage:new{
+                        text = string.format(
+                            _("Couldn't check for updates (%s)."), tostring(err or "?")),
+                        timeout = 5,
+                    })
+                end
+                return
+            end
+            G_reader_settings:saveSetting(self.key_update_last_check, os.time())
+            if not Update.is_newer(info.version, Update.VERSION) then
+                if manual then
+                    UIManager:show(InfoMessage:new{ text = _("You're up to date."), timeout = 3 })
+                end
+                return
+            end
+            local ConfirmBox = require("ui/widget/confirmbox")
+            UIManager:show(ConfirmBox:new{
+                text = string.format(
+                    _("ORP Highlighting %s is available. Update now?"), info.version),
+                ok_text = _("Update"),
+                ok_callback = function() self:installUpdate(info) end,
+            })
+        end)
+    end)
+end
+
+function ORPHighlighting:installUpdate(info)
+    local plugin_dir = self.path
+    if not plugin_dir or not Update.isWritable(plugin_dir) then
+        UIManager:show(InfoMessage:new{
+            text = _("This install location is read-only; please update manually."),
+            timeout = 6,
+        })
+        return
+    end
+    self:runAsync(function()
+        local completed, ok, err = self:runInBackground(
+            _("Downloading update…"),
+            function()
+                local ran, res, reason = pcall(Update.install, info, plugin_dir)
+                if not ran then return false, tostring(res) end
+                return res, reason
+            end)
+        if completed == false then return end
+        if ok then
+            UIManager:askForRestart(_("ORP Highlighting updated. Restart KOReader to apply."))
+        else
+            UIManager:show(InfoMessage:new{
+                text = string.format(_("Update failed: %s"), tostring(err)),
+                timeout = 6,
+            })
+        end
+    end)
+end
+
+-- Weekly, silent background check (only asks if a newer version exists).
+function ORPHighlighting:maybeCheckForUpdates()
+    if not self.path then return end
+    local last = tonumber(G_reader_settings:readSetting(self.key_update_last_check)) or 0
+    if os.time() - last < 7 * 24 * 60 * 60 then return end
+    if not self:isOnline() then return end
+    UIManager:scheduleIn(30, function()
+        if self.ui and self.ui.document then
+            self:checkForUpdates(false)
+        end
+    end)
 end
 
 return ORPHighlighting

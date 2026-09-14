@@ -18,11 +18,16 @@ jobs:
         run: |
           mkdir -p dist
           zip -r dist/orp_highlighting.koplugin.zip orp_highlighting.koplugin
+          cd dist
+          sha256sum orp_highlighting.koplugin.zip > orp_highlighting.koplugin.zip.sha256
+          cat orp_highlighting.koplugin.zip.sha256
 
       - name: Create/update release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/orp_highlighting.koplugin.zip
+          files: |
+            dist/orp_highlighting.koplugin.zip
+            dist/orp_highlighting.koplugin.zip.sha256
           name: ORP Highlighting ${{ github.ref_name }}
           body: |
             ORP Highlighting plugin.
