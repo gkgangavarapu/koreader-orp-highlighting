@@ -39,6 +39,10 @@ modified.
 
 ## Usage
 
+The plugin appears under **Tools → ORP Highlighting** both in the file browser
+and while reading. The highlight itself only applies to a reflowable book, so the
+toggle and the diagnostic are disabled until a book is open.
+
 1. Open a reflowable book (EPUB, TXT, FB2, HTML).
 2. Go to **Tools → ORP Highlighting**.
 3. Toggle **ORP Highlighting** on.

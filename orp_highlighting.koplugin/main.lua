@@ -4,8 +4,11 @@ ORP Highlighting plugin.
 Toggles a mode where the Optimal Recognition Point (ORP) character of every word
 on the normal, manually-read, paged view is visually distinguished.
 
-This is a *reader* plugin (is_doc_only = true). ReaderUI instantiates it and calls
-init() with self.ui / self.view / self.document set, exactly like other doc plugins.
+This is a normal plugin (is_doc_only = false), so it is instantiated both in the
+File Manager and in the Reader, exactly like Goodreads Sync. In the Reader the
+host passes self.view / self.document; in the File Manager only self.ui is set,
+so every document-dependent operation is guarded. The visual work only happens
+while reading a reflowable (CREngine) document.
 
 Phases implemented here:
   Phase 1  plugin skeleton + persistent ON/OFF toggle + reader gear-menu submenu.
@@ -74,7 +77,7 @@ end
 
 local ORPHighlighting = WidgetContainer:extend{
     name = "orp_highlighting",
-    is_doc_only = true,
+    is_doc_only = false,
     -- Keys managed in G_reader_settings (global KOReader settings), so the
     -- toggle survives across sessions and books.
     settings_key = "orp_highlighting",
@@ -138,11 +141,16 @@ end
 -- document has no fixed pages and exposes CRE text APIs), rather than checking
 -- a provider string that isn't reliably present on `document.info`.
 function ORPHighlighting:_isCre(doc)
-    doc = doc or self.ui.document
+    doc = doc or (self.ui and self.ui.document)
     return doc ~= nil
         and doc.info ~= nil
         and doc.info.has_pages == false
         and type(doc.getTextFromPositions) == "function"
+end
+
+-- True when a document is open (i.e. we are in the Reader, not the File Manager).
+function ORPHighlighting:hasDocument()
+    return self.ui ~= nil and self.ui.document ~= nil
 end
 
 function ORPHighlighting:_isValidStyle(id)
@@ -213,6 +221,7 @@ function ORPHighlighting:addToMainMenu(menu_items)
         sub_item_table = {
             {
                 text = _("ORP Highlighting"),
+                enabled_func = function() return self:hasDocument() end,
                 checked_func = function() return self.is_enabled end,
                 callback = function()
                     self.is_enabled = not self.is_enabled
@@ -240,6 +249,7 @@ function ORPHighlighting:addToMainMenu(menu_items)
                 sub_item_table = {
                     {
                         text = _("Run ORP diagnostic on current page"),
+                        enabled_func = function() return self:hasDocument() end,
                         keep_menu_open = true,
                         callback = function()
                             self:showDiagnostic()
@@ -546,7 +556,8 @@ end
 function ORPHighlighting:isOnline()
     local ok, NetworkMgr = pcall(require, "ui/network/manager")
     if ok and NetworkMgr and type(NetworkMgr.isConnected) == "function" then
-        return NetworkMgr:isConnected()
+        local ok_call, connected = pcall(NetworkMgr.isConnected, NetworkMgr)
+        if ok_call then return connected end
     end
     return true
 end

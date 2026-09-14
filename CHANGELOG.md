@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-14
+
+### Fixed
+
+- The plugin now shows up in the File Manager as well as the Reader. It was
+  marked `is_doc_only = true`, which made KOReader skip it outside the Reader
+  (the menu was missing from **Tools** in the file browser). It is now a normal
+  plugin like Goodreads Sync; document-only entries are disabled when no book is
+  open.
+
 ## [0.2.0] - 2026-09-14
 
 ### Added
